@@ -3,82 +3,69 @@ import numpy as np
 import tensorflow as tf
 from sklearn.model_selection import train_test_split
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Dropout, Input
+from tensorflow.keras.layers import Dense, Dropout, Input, LSTM
 
-# ==========================================
-# 1. DEFINICIÓN DEL MODELO (Tu código)
-# ==========================================
 NUM_CLASES = 29
+FRAMES_POR_SECUENCIA = 20
 
 
-def crear_modelo(num_clases: int = NUM_CLASES) -> tf.keras.Model:
+def crear_modelo_lstm(num_clases: int = NUM_CLASES) -> tf.keras.Model:
     model = Sequential(
         [
-            Input(shape=(42,)),
-            Dense(128, activation="relu"),
+            # La entrada ahora es una matriz (20 frames, 42 coordenadas)
+            Input(shape=(FRAMES_POR_SECUENCIA, 42)),
+            # Primera capa LSTM (devuelve secuencias para que la segunda LSTM las lea)
+            LSTM(64, return_sequences=True, activation="tanh"),
             Dropout(0.2),
-            Dense(64, activation="relu"),
+            # Segunda capa LSTM (procesa la info final y la aplana)
+            LSTM(32, return_sequences=False, activation="tanh"),
             Dropout(0.2),
             Dense(32, activation="relu"),
             Dense(num_clases, activation="softmax"),
         ]
     )
     model.compile(
-        optimizer="adam",
-        loss="sparse_categorical_crossentropy",
-        metrics=["accuracy"],
+        optimizer="adam", loss="sparse_categorical_crossentropy", metrics=["accuracy"]
     )
     return model
 
 
-# ==========================================
-# 2. LÓGICA DE ENTRENAMIENTO
-# ==========================================
 def entrenar():
-    print("Cargando dataset...")
-    # Asegúrate de tener tu archivo CSV en la misma carpeta
+    print("Cargando dataset de secuencias...")
     try:
-        df = pd.read_csv("dataset_senas.csv")
+        df = pd.read_csv("dataset_secuencias.csv")
     except FileNotFoundError:
-        print(
-            "Error: No se encontró 'dataset_senas.csv'. Necesitas recolectar datos primero."
-        )
+        print("Error: No se encontró 'dataset_secuencias.csv'.")
         return
 
-    # Separar etiquetas (Y) y características (X)
-    # Suponemos que la columna 0 es la clase y de la 1 a la 42 son las coordenadas
-    X = df.iloc[:, 1:].values
+    # Extraer características
+    X_aplanado = df.iloc[:, 1:].values
     y = df.iloc[:, 0].values
 
-    # Dividir en datos de entrenamiento (80%) y prueba (20%)
+    # RECONSTRUIR LAS SECUENCIAS:
+    # Convertimos las filas de 840 valores de vuelta a bloques de (20, 42)
+    num_muestras = X_aplanado.shape[0]
+    X = X_aplanado.reshape((num_muestras, FRAMES_POR_SECUENCIA, 42))
+
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
     )
 
-    print(f"Datos listos: {len(X_train)} para entrenar, {len(X_test)} para validar.")
+    print(f"Datos listos: {len(X_train)} secuencias para entrenar.")
 
-    # Crear el modelo
-    model = crear_modelo()
+    model = crear_modelo_lstm()
+    model.summary()
 
-    # Entrenar la red neuronal
-    # Epochs es la cantidad de veces que la red verá todos los datos
-    print("Iniciando el entrenamiento de la red neuronal...")
-    historial = model.fit(
-        X_train,
-        y_train,
-        epochs=50,  # Puedes subir esto a 100 si la precisión es baja
-        batch_size=32,  # Procesa 32 ejemplos a la vez
-        validation_data=(X_test, y_test),
+    print("Iniciando el entrenamiento LSTM...")
+    model.fit(
+        X_train, y_train, epochs=50, batch_size=16, validation_data=(X_test, y_test)
     )
 
-    # Evaluar el modelo final
     loss, accuracy = model.evaluate(X_test, y_test)
-    print(f"\n--- Resultados Finales ---")
-    print(f"Precisión en datos desconocidos (prueba): {accuracy * 100:.2f}%")
+    print(f"\nPrecisión final en secuencias desconocidas: {accuracy * 100:.2f}%")
 
-    # Guardar los pesos para usarlos en tu script de traducción
-    model.save_weights("pesos_modelo.weights.h5")
-    print("\n¡Listo! Los pesos se han guardado como 'pesos_modelo.h5'.")
+    model.save_weights("pesos_lstm.weights.h5")
+    print("Pesos guardados como 'pesos_lstm.weights.h5'.")
 
 
 if __name__ == "__main__":

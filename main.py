@@ -2,25 +2,24 @@ import time
 import cv2
 import numpy as np
 import tensorflow as tf
+from collections import deque
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Dropout, Input
+from tensorflow.keras.layers import Dense, Dropout, Input, LSTM
 
-# ==========================================
-# 1. DEFINICIÓN DEL MODELO
-# ==========================================
 NUM_CLASES = 29
+FRAMES_POR_SECUENCIA = 20
 
 
-def crear_modelo(num_clases: int = NUM_CLASES) -> tf.keras.Model:
+def crear_modelo_lstm(num_clases: int = NUM_CLASES) -> tf.keras.Model:
     model = Sequential(
         [
-            Input(shape=(42,)),
-            Dense(128, activation="relu"),
+            Input(shape=(FRAMES_POR_SECUENCIA, 42)),
+            LSTM(64, return_sequences=True, activation="tanh"),
             Dropout(0.2),
-            Dense(64, activation="relu"),
+            LSTM(32, return_sequences=False, activation="tanh"),
             Dropout(0.2),
             Dense(32, activation="relu"),
             Dense(num_clases, activation="softmax"),
@@ -38,12 +37,8 @@ CLASES_MAP[27] = "INICIO"
 CLASES_MAP[28] = "FIN"
 
 
-# ==========================================
-# 2. DIBUJO ANTI-CRASH (Bypass M1)
-# ==========================================
 def dibujar_resultados(frame, hand_landmarks, prediccion_texto):
     height, width, _ = frame.shape
-
     CONEXIONES = [
         (0, 1),
         (1, 2),
@@ -67,7 +62,6 @@ def dibujar_resultados(frame, hand_landmarks, prediccion_texto):
         (18, 19),
         (19, 20),
     ]
-
     for start_idx, end_idx in CONEXIONES:
         p1 = (
             int(hand_landmarks[start_idx].x * width),
@@ -78,28 +72,22 @@ def dibujar_resultados(frame, hand_landmarks, prediccion_texto):
             int(hand_landmarks[end_idx].y * height),
         )
         cv2.line(frame, p1, p2, (255, 255, 255), 2)
-
     for lm in hand_landmarks:
         cv2.circle(frame, (int(lm.x * width), int(lm.y * height)), 5, (0, 0, 255), -1)
 
-    cv2.rectangle(frame, (0, 0), (400, 60), (0, 0, 0), -1)
+    cv2.rectangle(frame, (0, 0), (450, 60), (0, 0, 0), -1)
     cv2.putText(
         frame, prediccion_texto, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2
     )
 
 
-# ==========================================
-# 3. LÓGICA PRINCIPAL DE TRADUCCIÓN
-# ==========================================
 def main():
-    print("[INFO] Cargando modelo de TensorFlow...")
-    model = crear_modelo()
+    model = crear_modelo_lstm()
     try:
-        # Cargar los pesos con la extensión requerida por Keras 3
-        model.load_weights("pesos_modelo.weights.h5")
-        print("[OK] Pesos cargados correctamente.")
-    except Exception as e:
-        print(f"[ERROR] No se pudo cargar 'pesos_modelo.weights.h5': {e}")
+        model.load_weights("pesos_lstm.weights.h5")
+        print("[OK] Pesos LSTM cargados.")
+    except:
+        print("[ERROR] No se encontró 'pesos_lstm.weights.h5'.")
         return
 
     base_options = python.BaseOptions(model_asset_path="hand_landmarker.task")
@@ -108,8 +96,10 @@ def main():
     )
     detector = vision.HandLandmarker.create_from_options(options)
 
-    cap = cv2.VideoCapture(1)  # Cambia a 0 si falla
-    print("[INFO] Iniciando traductor. Presiona 'q' para salir.")
+    cap = cv2.VideoCapture(1)
+
+    # NUESTRO BUFFER DE VIDEO (Mantiene siempre los últimos 20 frames)
+    secuencia_buffer = deque(maxlen=FRAMES_POR_SECUENCIA)
 
     while cap.isOpened():
         ret, frame = cap.read()
@@ -126,30 +116,32 @@ def main():
         if result.hand_landmarks:
             hand_lms = result.hand_landmarks[0]
 
-            # EXTRACCIÓN CON REFERENCIA A LA MUÑECA PARA LA IA
+            # 1. Extraer coordenadas relativas
             coords = []
-            wrist_x = hand_lms[0].x
-            wrist_y = hand_lms[0].y
-
+            wrist_x, wrist_y = hand_lms[0].x, hand_lms[0].y
             for lm in hand_lms:
-                rel_x = lm.x - wrist_x
-                rel_y = lm.y - wrist_y
-                coords.extend([rel_x, rel_y])
+                coords.extend([lm.x - wrist_x, lm.y - wrist_y])
 
-            # Predicción
-            input_data = np.array([coords])
-            pred = model.predict(input_data, verbose=0)
-            clase_idx = np.argmax(pred)
-            confianza = np.max(pred)
+            # 2. Agregar al buffer
+            secuencia_buffer.append(coords)
 
-            if confianza > 0.7:
-                letra = CLASES_MAP.get(clase_idx, "?")
-                texto_display = f"Letra: {letra} ({confianza*100:.1f}%)"
-            else:
-                texto_display = "Incierto..."
+            # 3. Solo predecir si el buffer ya tiene 20 frames
+            if len(secuencia_buffer) == FRAMES_POR_SECUENCIA:
+                # Convertir a numpy array y agregar dimensión de batch: shape (1, 20, 42)
+                input_data = np.expand_dims(secuencia_buffer, axis=0)
+                pred = model.predict(input_data, verbose=0)
+                clase_idx = np.argmax(pred)
+                confianza = np.max(pred)
+
+                if confianza > 0.7:
+                    texto_display = f"Letra: {CLASES_MAP.get(clase_idx, '?')} ({confianza*100:.1f}%)"
+                else:
+                    texto_display = "Incierto..."
 
             dibujar_resultados(frame, hand_lms, texto_display)
         else:
+            # Si se esconde la mano, vaciamos el buffer para no mezclar movimientos
+            secuencia_buffer.clear()
             cv2.putText(
                 frame,
                 texto_display,
@@ -160,8 +152,7 @@ def main():
                 2,
             )
 
-        cv2.imshow("Traductor", frame)
-
+        cv2.imshow("Traductor Dinamico LSTM", frame)
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
