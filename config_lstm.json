@@ -1,0 +1,9 @@
+{
+    "num_clases": 29,
+    "frames_por_secuencia": 20,
+    "coordenadas_por_frame": 42,
+    "modelo_path": "modelo_lstm.keras",
+    "pesos_path": "pesos_lstm.weights.h5",
+    "scaler_path": "scaler_lstm.npz",
+    "dataset_path": "dataset_secuencias.csv"
+}
