@@ -309,8 +309,20 @@ def main():
 
         cv2.imshow("Traductor Dinamico LSTM", frame)
 
-        if cv2.waitKey(1) & 0xFF == ord("q"):
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord("q"):
             break
+        elif key == 127 or key == 8:  # BACKSPACE/DELETE
+            if word_buffer:
+                word_buffer.pop()
+                print(f"Última letra borrada. Palabra actual: {''.join(word_buffer)}")
+                current_candidate = None
+                candidate_start_time = None
+        elif key == ord(" "):  # ESPACIO
+            word_buffer.append(" ")
+            print(f"Espacio agregado. Palabra actual: {''.join(word_buffer)}")
+            current_candidate = None
+            candidate_start_time = None
 
     cap.release()
     cv2.destroyAllWindows()
